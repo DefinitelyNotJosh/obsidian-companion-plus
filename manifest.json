@@ -1,11 +1,11 @@
 {
-	"id": "companion",
-	"name": "Companion",
+	"id": "companion-plus",
+	"name": "Companion Plus",
 	"version": "1.8.0",
 	"minAppVersion": "1.1.16",
 	"description": "Autocomplete with AI, including ChatGPT and ollama, through a copilot-like interface.",
-	"author": "rizerphe",
-	"authorUrl": "https://github.com/rizerphe",
-	"fundingUrl": "https://www.buymeacoffee.com/rizerphe",
-	"isDesktopOnly": false
+	"author": "DefinitelyNotJosh",
+	"authorUrl": "https://github.com/DefinitelyNotJosh",
+	"fundingUrl": "https://www.buymeacoffee.com/DefinitelyNotJosh",
+	"isDesktopOnly": true
 }
