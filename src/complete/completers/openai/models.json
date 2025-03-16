@@ -1,5 +1,20 @@
 [
     {
+        "id": "gpt-4-turbo",
+        "name": "GPT-4 Turbo",
+        "description": "Latest GPT-4 model with improved capabilities and accuracy"
+    },
+    {
+        "id": "gpt-4",
+        "name": "GPT-4",
+        "description": "Most powerful model for complex tasks requiring deep understanding and reasoning"
+    },
+    {
+        "id": "gpt-3.5-turbo",
+        "name": "GPT-3.5 Turbo",
+        "description": "Fast and efficient model with good capabilities at lower cost than GPT-4"
+    },
+    {
         "id": "text-davinci-003",
         "name": "Davinci-003",
         "description": "Can do any language task with better quality, longer output, and consistent instruction-following than the curie, babbage, or ada models. Also supports inserting completions within text."

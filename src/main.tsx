@@ -17,6 +17,7 @@ import SettingsComponent from "./settings/settings";
 import { CompletionCacher } from "./cache";
 import { available } from "./complete/completers";
 import { Model } from "./complete/complete";
+import { ChatSidebarView, CHAT_VIEW_TYPE } from "./chat/ChatSidebarView";
 
 interface CompanionModelSettings {
 	name: string;
@@ -54,6 +55,43 @@ interface CompanionSettings {
 	};
 	presets: CompanionModelSettings[];
 	fallback: string | null;
+	
+	// New settings for feature toggles
+	enableChat: boolean;
+	enableAutocomplete: boolean;
+	
+	// LLM selections for different features
+	chatProvider: string;
+	chatModel: string;
+	autocompleteProvider: string;
+	autocompleteModel: string;
+	
+	// Add new properties for chatbot and autocompleter
+	chatbot: {
+		provider: string;
+		model: string;
+		provider_settings: {
+			[provider: string]: {
+				settings: string;
+				models: {
+					[model: string]: string;
+				};
+			};
+		};
+		apiKey: string;
+	};
+	autocompleter: {
+		provider: string;
+		model: string;
+		provider_settings: {
+			[provider: string]: {
+				settings: string;
+				models: {
+					[model: string]: string;
+				};
+			};
+		};
+	};
 }
 
 const DEFAULT_SETTINGS: CompanionSettings = {
@@ -74,6 +112,29 @@ const DEFAULT_SETTINGS: CompanionSettings = {
 	provider_settings: {},
 	presets: [],
 	fallback: null,
+	
+	// New settings for feature toggles
+	enableChat: true,
+	enableAutocomplete: true,
+	
+	// LLM selections for different features
+	chatProvider: "openai-chatgpt",
+	chatModel: "gpt3.5-turbo",
+	autocompleteProvider: "openai-chatgpt",
+	autocompleteModel: "gpt3.5-turbo",
+	
+	// Add new properties for chatbot and autocompleter
+	chatbot: {
+		provider: "openai-chatgpt",
+		model: "gpt3.5-turbo",
+		provider_settings: {},
+		apiKey: "",
+	},
+	autocompleter: {
+		provider: "openai-chatgpt",
+		model: "gpt3.5-turbo",
+		provider_settings: {},
+	},
 };
 
 export default class Companion extends Plugin {
@@ -113,6 +174,7 @@ export default class Companion extends Plugin {
 	}
 
 	async setupToggle() {
+		this.enabled = this.settings.enable_by_default && this.settings.enableAutocomplete;
 		this.addRibbonIcon(
 			"terminal",
 			"Toggle completion",
@@ -167,16 +229,57 @@ export default class Companion extends Plugin {
 	}
 
 	async onload() {
-		await this.setupModelChoice();
-		await this.setupToggle();
-		await this.setupSuggestions();
-		await this.setupStatusbar();
-		await this.setupSuggestionCommands();
+		await this.loadSettings();
+
+		if (this.settings.enableAutocomplete) {
+			await this.setupModelChoice();
+			await this.setupToggle();
+			await this.setupSuggestions();
+			await this.setupStatusbar();
+			await this.setupSuggestionCommands();
+		}
+
+		if (this.settings.enableChat) {
+			this.registerView(
+				CHAT_VIEW_TYPE,
+				(leaf) => new ChatSidebarView(leaf, this)
+			);
+	
+			this.addRibbonIcon("message-square", "Open Companion Chat", () => {
+				this.activateChatView();
+			});
+	
+			this.addCommand({
+				id: "open-chat",
+				name: "Open Chat",
+				callback: () => {
+					this.activateChatView();
+				},
+			});
+		}
 
 		this.addSettingTab(new CompanionSettingsTab(this.app, this));
 	}
 
-	onunload() {}
+	onunload() {
+		// Unregister the chat view
+		this.app.workspace.detachLeavesOfType(CHAT_VIEW_TYPE);
+	}
+	
+	async activateChatView() {
+		const { workspace } = this.app;
+		
+		let leaf = workspace.getLeavesOfType(CHAT_VIEW_TYPE)[0];
+		if (!leaf) {
+			leaf = workspace.getRightLeaf(false);
+			await leaf.setViewState({
+				type: CHAT_VIEW_TYPE,
+				active: true,
+			});
+		}
+		
+		workspace.revealLeaf(leaf);
+	}
 
 	fillStatusbar() {
 		if (!this.statusBarItemEl) return;
@@ -247,10 +350,114 @@ export default class Companion extends Plugin {
 			DEFAULT_SETTINGS,
 			await this.loadData()
 		);
+		
+		// Ensure backward compatibility - initialize chatbot and autocompleter
+		// settings from legacy settings if they're not already set
+		if (!this.settings.chatbot || !this.settings.chatbot.provider) {
+			this.settings.chatbot = {
+				provider: this.settings.chatProvider || this.settings.provider,
+				model: this.settings.chatModel || this.settings.model,
+				provider_settings: this.settings.provider_settings || {},
+				apiKey: ""
+			};
+		}
+		
+		if (!this.settings.autocompleter || !this.settings.autocompleter.provider) {
+			this.settings.autocompleter = {
+				provider: this.settings.autocompleteProvider || this.settings.provider,
+				model: this.settings.autocompleteModel || this.settings.model,
+				provider_settings: this.settings.provider_settings || {}
+			};
+		}
+		
+		// Also update legacy settings from new structure for compatibility
+		this.settings.chatProvider = this.settings.chatbot.provider;
+		this.settings.chatModel = this.settings.chatbot.model;
+		this.settings.autocompleteProvider = this.settings.autocompleter.provider;
+		this.settings.autocompleteModel = this.settings.autocompleter.model;
 	}
 
 	async saveSettings() {
+		// Ensure chatbot and autocompleter settings are synchronized
+		// with the legacy chatProvider/chatModel settings
+		this.settings.chatProvider = this.settings.chatbot.provider;
+		this.settings.chatModel = this.settings.chatbot.model;
+		this.settings.autocompleteProvider = this.settings.autocompleter.provider;
+		this.settings.autocompleteModel = this.settings.autocompleter.model;
+		
+		// Synchronize API keys between chatbot and autocompleter if they use the same provider
+		this.synchronizeApiKeys();
+		
 		await this.saveData(this.settings);
+		// Emit an event when settings are saved
+		this.app.workspace.trigger("companion:settings-changed");
+	}
+
+	// Function to synchronize API keys between chatbot and autocompleter settings
+	private synchronizeApiKeys() {
+		// If both are using the same provider, share the API key
+		if (this.settings.chatbot.provider === this.settings.autocompleter.provider) {
+			// Get the provider ID
+			const providerId = this.settings.chatbot.provider;
+			
+			// Ensure provider settings exist for both
+			if (!this.settings.chatbot.provider_settings) {
+				this.settings.chatbot.provider_settings = {};
+			}
+			if (!this.settings.autocompleter.provider_settings) {
+				this.settings.autocompleter.provider_settings = {};
+			}
+			
+			// Check if chatbot has provider settings for this provider
+			if (this.settings.chatbot.provider_settings[providerId]) {
+				try {
+					// Parse chatbot provider settings to extract API key
+					const chatbotSettings = this.settings.chatbot.provider_settings[providerId].settings;
+					if (chatbotSettings) {
+						const parsedChatbotSettings = JSON.parse(chatbotSettings);
+						
+						// If autocompleter doesn't have settings for this provider, initialize them
+						if (!this.settings.autocompleter.provider_settings[providerId]) {
+							this.settings.autocompleter.provider_settings[providerId] = {
+								settings: "",
+								models: {}
+							};
+						}
+						
+						// Get or initialize autocompleter settings
+						let autocompleterSettings = "{}";
+						if (this.settings.autocompleter.provider_settings[providerId]?.settings) {
+							autocompleterSettings = this.settings.autocompleter.provider_settings[providerId].settings;
+						}
+						
+						// Parse autocompleter settings
+						let parsedAutocompleterSettings = {};
+						try {
+							parsedAutocompleterSettings = JSON.parse(autocompleterSettings);
+						} catch (e) {
+							console.error("Error parsing autocompleter settings:", e);
+						}
+						
+						// If chatbot has an API key, copy it to autocompleter
+						if (parsedChatbotSettings.api_key) {
+							parsedAutocompleterSettings = {
+								...parsedAutocompleterSettings,
+								api_key: parsedChatbotSettings.api_key
+							};
+							
+							// Update autocompleter settings
+							this.settings.autocompleter.provider_settings[providerId].settings = 
+								JSON.stringify(parsedAutocompleterSettings);
+							
+							// Also update the main chatbot API key field
+							this.settings.chatbot.apiKey = parsedChatbotSettings.api_key;
+						}
+					}
+				} catch (e) {
+					console.error("Error synchronizing API keys:", e);
+				}
+			}
+		}
 	}
 
 	async *triggerCompletion(): AsyncGenerator<Suggestion, void, unknown> {
@@ -266,13 +473,14 @@ export default class Companion extends Plugin {
 
 		const cursor = view.editor.getCursor();
 		const currentLine = view.editor.getLine(cursor.line);
-		if (!currentLine.length) {
-			yield {
-				display_suggestion: "",
-				complete_suggestion: "",
-			};
-			return;
-		} // Don't complete on empty lines
+		// if (!currentLine.length) {
+		// 	yield {
+		// 		display_suggestion: "",
+		// 		complete_suggestion: "",
+		// 	};
+		// 	return;
+		// } // Don't complete on empty lines
+		// Screw it, I want it to work all the time
 		const prefix = view.editor.getRange({ line: 0, ch: 0 }, cursor);
 		const suffix = view.editor.getRange(cursor, {
 			line: view.editor.lastLine(),
@@ -302,7 +510,8 @@ export default class Companion extends Plugin {
 
 	async get_model(
 		provider: string,
-		model: string
+		model: string,
+		apiKey?: string
 	): Promise<CompletionCacher | null> {
 		for (const cached_model of this.models) {
 			if (
@@ -316,28 +525,86 @@ export default class Companion extends Plugin {
 			(available_provider) => available_provider.id === provider
 		);
 		if (!available_provider) return null;
-		const provider_settings = this.settings.provider_settings[provider];
-		const available_models = await available_provider.get_models(
-			provider_settings ? provider_settings.settings : ""
-		);
-		const available_model: Model | undefined = available_models.find(
-			(available_model: Model) => available_model.id == model
-		);
-		if (!available_model) return null;
-		const cached = new CompletionCacher(
-			available_model,
-			provider_settings
-				? provider_settings.models[available_model.id]
-				: "",
-			this.settings.accept,
-			this.settings.keybind == null
-		);
-		this.models.push({
-			provider: provider,
-			model: available_model.id,
-			cacher: cached,
-		});
-		return cached;
+		
+		let provider_settings = this.settings.provider_settings[provider];
+		let provider_settings_string = provider_settings ? provider_settings.settings : "";
+		
+		// If apiKey is provided, update the provider settings with it
+		if (apiKey && apiKey.trim() !== "") {
+			try {
+				// Parse existing settings or create new settings object
+				let settings = {};
+				if (provider_settings_string) {
+					try {
+						settings = JSON.parse(provider_settings_string);
+					} catch (e) {
+						console.error("Error parsing provider settings:", e);
+					}
+				}
+				
+				// Add the API key to the settings
+				settings = { ...settings, api_key: apiKey.trim() };
+				
+				// Update the provider settings string
+				provider_settings_string = JSON.stringify(settings);
+				
+				// Create modified provider settings object if needed
+				if (!provider_settings) {
+					provider_settings = {
+						settings: provider_settings_string,
+						models: {}
+					};
+				} else {
+					provider_settings = {
+						...provider_settings,
+						settings: provider_settings_string
+					};
+				}
+			} catch (e) {
+				console.error("Error updating API key in provider settings:", e);
+			}
+		} 
+		// If no specific API key is provided but the provider settings might contain one
+		else if (provider_settings_string) {
+			try {
+				const settings = JSON.parse(provider_settings_string);
+				// If there's an API key in provider settings but not in the specific apiKey param
+				if (settings.api_key && settings.api_key.trim() !== "") {
+					// For chatbot, update the chatbot.apiKey field to keep it in sync
+					if (provider === this.settings.chatbot.provider) {
+						this.settings.chatbot.apiKey = settings.api_key;
+					}
+				}
+			} catch (e) {
+				console.error("Error checking for API key in provider settings:", e);
+			}
+		}
+		
+		try {
+			const available_models = await available_provider.get_models(provider_settings_string);
+			const available_model: Model | undefined = available_models.find(
+				(available_model: Model) => available_model.id == model
+			);
+			if (!available_model) return null;
+			const cached = new CompletionCacher(
+				available_model,
+				provider_settings && provider_settings.models && provider_settings.models[available_model.id]
+					? provider_settings.models[available_model.id]
+					: "",
+				this.settings.accept,
+				this.settings.keybind == null
+			);
+			this.models.push({
+				provider,
+				model,
+				cacher: cached,
+			});
+			return cached;
+		} catch (e) {
+			console.error("Error getting models for provider:", e);
+			new Notice(`Error loading model: ${e instanceof Error ? e.message : String(e)}`);
+			return null;
+		}
 	}
 
 	async load_model(model: CompletionCacher) {
@@ -409,29 +676,36 @@ export default class Companion extends Plugin {
 		prefix: string,
 		suffix: string
 	): AsyncGenerator<Suggestion> {
-		try {
-			try {
-				const completion = this._complete(
-					prefix,
-					suffix,
-					this.settings.provider,
-					this.settings.model
-				);
-				yield* completion;
-			} catch (e) {
-				if (e.name === "ModelNotFound") {
-					this.select_first_available_model();
-					yield* this.complete(prefix, suffix);
-					return;
-				}
-				throw e;
-			}
-		} catch (e) {
-			if (e.message) {
-				new Notice(`Error completing: ${e.message}`);
-			}
-			return this.fallback_complete(prefix, suffix);
+		if (!this.settings.enableAutocomplete) {
+			return;
 		}
+		
+		const provider = this.settings.autocompleteProvider || this.settings.provider;
+		const model = this.settings.autocompleteModel || this.settings.model;
+		
+		for await (const suggestion of this._complete(
+			prefix,
+			suffix,
+			provider,
+			model
+		)) {
+			yield suggestion;
+		}
+	}
+
+	async get_chat_model(): Promise<CompletionCacher | null> {
+		return this.get_model(
+			this.settings.chatbot.provider, 
+			this.settings.chatbot.model, 
+			this.settings.chatbot.apiKey
+		);
+	}
+
+	async get_autocomplete_model(): Promise<CompletionCacher | null> {
+		return this.get_model(
+			this.settings.autocompleter.provider, 
+			this.settings.autocompleter.model
+		);
 	}
 }
 

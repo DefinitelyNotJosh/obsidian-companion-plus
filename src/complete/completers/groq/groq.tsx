@@ -37,13 +37,32 @@ export default class GroqModel implements Model {
 		this.id = id;
 		this.name = name;
 		this.description = description;
-		this.provider_settings = parse_provider_settings(provider_settings);
+		
+		// Parse and validate provider settings
+		try {
+			this.provider_settings = parse_provider_settings(provider_settings);
+			
+			// Ensure API key exists and is properly formatted
+			if (!this.provider_settings.api_key || this.provider_settings.api_key.trim() === "") {
+				throw new Error("Groq API key is missing or empty");
+			}
+			
+			// Initialize Groq client with properly formatted API key
+			this.groq = new Groq({
+				apiKey: this.provider_settings.api_key.trim(),
+				dangerouslyAllowBrowser: true,
+			});
+		} catch (error) {
+			console.error("Error initializing Groq model:", error);
+			// Still initialize with empty API key to avoid null reference errors
+			this.provider_settings = parse_provider_settings("");
+			this.groq = new Groq({
+				apiKey: "",
+				dangerouslyAllowBrowser: true,
+			});
+		}
+		
 		this.cancel_generations = [];
-
-		this.groq = new Groq({
-			apiKey: this.provider_settings.api_key,
-			dangerouslyAllowBrowser: true,
-		});
 	}
 
 	async prepare(
@@ -201,21 +220,39 @@ export class GroqComplete implements Completer {
 	description: string = "Groq API, for ultra-fast generation";
 
 	async get_models(settings: string) {
-		const provider_settings = parse_provider_settings(settings);
-		const groq = new Groq({
-			apiKey: provider_settings.api_key,
-			dangerouslyAllowBrowser: true,
-		});
-		const models = await groq.models.list();
-
-		return models.data.map((model: any) => {
-			return new GroqModel(
-				settings,
-				model.id,
-				`${model.owned_by} ${model.id}`,
-				`${model.owned_by} ${model.id}`
-			);
-		});
+		try {
+			const provider_settings = parse_provider_settings(settings);
+			
+			// Validate API key existence
+			if (!provider_settings.api_key || provider_settings.api_key.trim() === "") {
+				throw new Error("Groq API key is missing or empty. Please add your API key in the settings.");
+			}
+			
+			// Create Groq instance with the validated API key
+			const groq = new Groq({
+				apiKey: provider_settings.api_key.trim(),
+				dangerouslyAllowBrowser: true,
+			});
+			
+			// Log request for debugging (no key included)
+			console.log("Requesting models from Groq API");
+			
+			// Fetch models
+			const models = await groq.models.list();
+			
+			// Return formatted models
+			return models.data.map((model: any) => {
+				return new GroqModel(
+					settings,
+					model.id,
+					`${model.owned_by} ${model.id}`,
+					`${model.owned_by} ${model.id}`
+				);
+			});
+		} catch (error) {
+			console.error("Error fetching Groq models:", error);
+			throw error;
+		}
 	}
 
 	Settings = ProviderSettingsUI;

@@ -27,6 +27,7 @@
 		"@types/react-dom": "^18.0.11",
 		"codemirror-companion-extension": "^0.0.11",
 		"esbuild-sass-plugin": "^2.6.0",
+		"groq-sdk": "^0.16.0",
 		"mustache": "^4.2.0",
 		"openai": "^4.17.0",
 		"react": "^18.2.0",

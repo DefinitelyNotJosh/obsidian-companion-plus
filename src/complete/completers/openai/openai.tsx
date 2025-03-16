@@ -13,6 +13,8 @@ import { z } from "zod";
 
 export const model_settings_schema = z.object({
 	context_length: z.number().int().positive(),
+	max_tokens: z.number().int().positive().optional(),
+	temperature: z.number().min(0).max(2).optional(),
 });
 export type ModelSettings = z.infer<typeof model_settings_schema>;
 const parse_model_settings = (settings: string): ModelSettings => {
@@ -21,6 +23,8 @@ const parse_model_settings = (settings: string): ModelSettings => {
 	} catch (e) {
 		return {
 			context_length: 4000,
+			max_tokens: 2048,
+			temperature: 0.7,
 		};
 	}
 };
@@ -39,24 +43,70 @@ export default class OpenAIModel implements Model {
 	}: {
 		settings: string | null;
 		saveSettings: (settings: string) => void;
-	}) => (
-		<SettingsItem
-			name="Context length"
-			description="In characters, how much context should the model get"
-		>
-			<input
-				type="number"
-				value={parse_model_settings(settings || "").context_length}
-				onChange={(e) =>
-					saveSettings(
-						JSON.stringify({
-							context_length: parseInt(e.target.value),
-						})
-					)
-				}
-			/>
-		</SettingsItem>
-	);
+	}) => {
+		const parsedSettings = parse_model_settings(settings || "");
+		return (
+			<>
+				<SettingsItem
+					name="Context length"
+					description="In characters, how much context should the model get"
+				>
+					<input
+						type="number"
+						value={parsedSettings.context_length}
+						aria-label="Context length"
+						onChange={(e) =>
+							saveSettings(
+								JSON.stringify({
+									...parsedSettings,
+									context_length: parseInt(e.target.value),
+								})
+							)
+						}
+					/>
+				</SettingsItem>
+				<SettingsItem
+					name="Max tokens"
+					description="Maximum number of tokens in the response (higher = longer responses)"
+				>
+					<input
+						type="number"
+						value={parsedSettings.max_tokens || 2048}
+						aria-label="Max tokens"
+						onChange={(e) =>
+							saveSettings(
+								JSON.stringify({
+									...parsedSettings,
+									max_tokens: parseInt(e.target.value),
+								})
+							)
+						}
+					/>
+				</SettingsItem>
+				<SettingsItem
+					name="Temperature"
+					description="Controls randomness: 0 = deterministic, higher = more random"
+				>
+					<input
+						type="number"
+						step="0.1"
+						min="0"
+						max="2"
+						value={parsedSettings.temperature || 0.7}
+						aria-label="Temperature"
+						onChange={(e) =>
+							saveSettings(
+								JSON.stringify({
+									...parsedSettings,
+									temperature: parseFloat(e.target.value),
+								})
+							)
+						}
+					/>
+				</SettingsItem>
+			</>
+		);
+	};
 
 	constructor(
 		id: string,
@@ -70,6 +120,10 @@ export default class OpenAIModel implements Model {
 		this.provider_settings = parse_settings(provider_settings);
 	}
 
+	isChatModel(modelId: string): boolean {
+		return modelId.includes("gpt-") && !modelId.startsWith("text-");
+	}
+
 	async complete(prompt: Prompt, settings: string): Promise<string> {
 		const parsed_settings = parse_model_settings(settings);
 		const api = new OpenAI({
@@ -78,13 +132,80 @@ export default class OpenAIModel implements Model {
 		});
 
 		try {
-			const response = await api.completions.create({
-				model: this.id,
-				prompt: prompt.prefix.slice(-parsed_settings.context_length),
-				max_tokens: 64,
-			});
+			// Use chat completions API for chat models (GPT-3.5, GPT-4)
+			if (this.isChatModel(this.id)) {
+				const response = await api.chat.completions.create({
+					model: this.id,
+					messages: [
+						{
+							role: "user",
+							content: prompt.prefix.slice(-parsed_settings.context_length),
+						}
+					],
+					max_tokens: parsed_settings.max_tokens || 2048, // Ensure we get complete responses
+					temperature: parsed_settings.temperature || 0.7,
+				});
 
-			return response.choices[0].text || "";
+				return response.choices[0].message.content || "";
+			} 
+			// Use completions API for legacy models (text-davinci, etc.)
+			else {
+				const response = await api.completions.create({
+					model: this.id,
+					prompt: prompt.prefix.slice(-parsed_settings.context_length),
+					max_tokens: parsed_settings.max_tokens || 2048, // Increased from 64 to ensure complete responses
+					temperature: parsed_settings.temperature || 0.7,
+				});
+
+				return response.choices[0].text || "";
+			}
+		} catch (e) {
+			this.parse_api_error(e);
+			throw e;
+		}
+	}
+
+	async *iterate(prompt: Prompt, settings: string): AsyncGenerator<string> {
+		const parsed_settings = parse_model_settings(settings);
+		const api = new OpenAI({
+			apiKey: this.provider_settings.api_key,
+			dangerouslyAllowBrowser: true,
+		});
+
+		try {
+			// Use chat completions API with streaming for chat models
+			if (this.isChatModel(this.id)) {
+				const stream = await api.chat.completions.create({
+					model: this.id,
+					messages: [
+						{
+							role: "user",
+							content: prompt.prefix.slice(-parsed_settings.context_length),
+						}
+					],
+					max_tokens: parsed_settings.max_tokens || 2048,
+					temperature: parsed_settings.temperature || 0.7,
+					stream: true,
+				});
+
+				for await (const chunk of stream) {
+					yield chunk.choices[0]?.delta?.content || "";
+				}
+			} 
+			// Use completions API with streaming for legacy models
+			else {
+				const stream = await api.completions.create({
+					model: this.id,
+					prompt: prompt.prefix.slice(-parsed_settings.context_length),
+					max_tokens: parsed_settings.max_tokens || 2048,
+					temperature: parsed_settings.temperature || 0.7,
+					stream: true,
+				});
+
+				for await (const chunk of stream) {
+					yield chunk.choices[0]?.text || "";
+				}
+			}
 		} catch (e) {
 			this.parse_api_error(e);
 			throw e;
@@ -141,8 +262,8 @@ export default class OpenAIModel implements Model {
 
 export class OpenAIComplete implements Completer {
 	id: string = "openai";
-	name: string = "OpenAI GPT3";
-	description: string = "OpenAI's GPT3 API";
+	name: string = "OpenAI";
+	description: string = "OpenAI's models including GPT-3.5 and GPT-4";
 
 	async get_models(settings: string) {
 		return available_models.map(
